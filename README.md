@@ -13,12 +13,13 @@ forest to **stdout**.
 
 ```
 PACE-2026-Submission/
-├── INSTALL.md          # this file
-├── Dockerfile          # Debian 13.5 builder image with HiGHS baked in (static)
-├── docker_setup.sh     # one-shot reproducible build in a Debian 13.5 container
-├── submission.cpp      # the complete solver (single translation unit)
-├── linux/submission    # prebuilt x86-64 Linux binary — fully STATIC, no runtime deps
-└── macos/submission    # prebuilt arm64 macOS binary (needs Homebrew HiGHS at runtime)
+├── README.md               # this file
+├── Solver-Description.pdf  # Short mathematical description of ideas used for the solver
+├── Dockerfile              # Debian 13.5 builder image with HiGHS baked in (static)
+├── docker_setup.sh         # one-shot reproducible build in a Debian 13.5 container
+├── submission.cpp          # the complete solver (single translation unit)
+├── linux/submission        # prebuilt x86-64 Linux binary — fully STATIC, no runtime deps
+└── macos/submission        # prebuilt arm64 macOS binary (needs Homebrew HiGHS at runtime)
 ```
 
 The prebuilt **Linux** binary is **fully statically linked** (HiGHS, libstdc++
