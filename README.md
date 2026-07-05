@@ -4,6 +4,11 @@ An heuristic solver for the **Maximum Agreement Forest** problem (PACE 2026
 heuristic track). It reads a problem instance on **stdin** and writes the agreement
 forest to **stdout**.
 
+<div style="border-left: 4px solid #F5C400; background: #FFF8CC; padding: 8px 12px; margin: 16px 0;">
+  <strong>Preliminary leaderboard result:</strong>
+  99.82 / 100 points on the optil.io heuristic track.
+</div>
+
 ## Contents
 
 ```
