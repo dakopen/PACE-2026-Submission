@@ -1,6 +1,6 @@
 # PACE 2026 — Maximum Agreement Forest solver
 
-An exact/heuristic solver for the **Maximum Agreement Forest** problem (PACE 2026
+An heuristic solver for the **Maximum Agreement Forest** problem (PACE 2026
 heuristic track). It reads a problem instance on **stdin** and writes the agreement
 forest to **stdout**.
 
