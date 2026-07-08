@@ -89,6 +89,22 @@ static std::vector<Component> singleton_forest(int n) {
     for (int l = 1; l <= n; ++l) f.emplace_back(std::vector<int>{l});
     return f;
 }
+// Common chains detected by the reduction, as ready-made components (reduced labels).
+// The solver seeds from these (kept whole) instead of collapsing them.
+static std::vector<Component> g_seed_chains;
+static std::vector<Component> seed_forest_impl(int n, const std::vector<Component>& chains) {
+    std::vector<char> used(n + 1, 0);
+    std::vector<Component> f;
+    for (const Component& c : chains) {
+        bool ok = c.size() >= 2;
+        if (ok) for (int l : c.leaves) if (l < 1 || l > n || used[l]) { ok = false; break; }
+        if (!ok) continue;
+        for (int l : c.leaves) used[l] = 1;
+        f.push_back(c);
+    }
+    for (int l = 1; l <= n; ++l) if (!used[l]) f.emplace_back(std::vector<int>{l});
+    return f;
+}
 
 static std::string format_forest(const std::vector<Component>& forest);
 
@@ -850,6 +866,7 @@ struct SubtreeReduction {
     int chain_reductions = 0;
     int chain_leaves_removed = 0;
     double elapsed_seconds = 0.0;
+    std::vector<std::vector<int>> chains;   // common chains (reduced labels), NOT collapsed
     bool changed = false;
 };
 
@@ -1069,19 +1086,14 @@ static SubtreeReduction compute_subtree_reduction(
 
     SubtreeReduction red;
 
-    // Common chain reduction (MAF). A maximal common m-chain is a run of pendant
-    // leaves that hang, in the SAME root-to-leaf order, off a caterpillar spine in
-    // BOTH trees. Bordewich & Semple show that replacing every such chain of length
-    // m > 3 with a 3-chain preserves m(S,T). We realize the 3-chain in place: keep
-    // the two chain endpoints and collapse the interior into a single representative
-    // leaf via the existing leaf-expansion machinery (exactly like a subtree
-    // contraction), so the lift is automatic and no forced components are created.
-    //
-    // Orientation matters: we only join two chain leaves when one is DIRECTLY above
-    // the other on the spine in *both* trees (same rooted direction). A reversed
-    // chain would give an interior block of >=3 leaves different rooted restrictions
-    // in the two trees, making the lifted component invalid; requiring a consistent
-    // direction keeps every contiguous sub-chain a valid common component.
+    // Common-chain detection (MAF). A maximal common m-chain is a run of pendant leaves
+    // that hang, in the SAME root-to-leaf order, off a caterpillar spine in BOTH trees.
+    // We do NOT collapse it (collapsing loses the interior spine edges and lets a forest
+    // that is edge-disjoint on the reduced trees lift to one that is not on the originals).
+    // Instead we detect each chain and hand it to the solver as a whole component to seed
+    // from -- keeping a common chain intact is optimal, and its edges stay in the model.
+    // up_neighbor gives, for a leaf L, the leaf directly above it on the spine, but only
+    // when the step has the same rooted direction in both trees.
     auto up_neighbor = [&](const std::vector<char>& na, const std::vector<int>& par,
                            const std::vector<int>& clc, const std::vector<int>& crc,
                            const std::vector<char>& lf, const std::vector<int>& lab,
@@ -1100,41 +1112,6 @@ static SubtreeReduction compute_subtree_reduction(
         return lab[uncle];
     };
 
-    auto apply_chain_reduction = [&]() -> int {
-        std::vector<int> succ(n + 1, 0), pred(n + 1, 0);
-        for (int L = 1; L <= n; ++L) {
-            if (!alive[L]) continue;
-            const int u1 = up_neighbor(node_alive1, p1, lc1, rc1, l1, lab1, node_of_label1, L);
-            if (u1 == 0) continue;
-            const int u2 = up_neighbor(node_alive2, p2, lc2, rc2, l2, lab2, node_of_label2, L);
-            if (u2 == 0 || u2 != u1 || !alive[u1]) continue;
-            succ[L] = u1;   // L -> u1 is a spine step, same direction in both trees
-            pred[u1] = L;
-        }
-        int removed = 0;
-        for (int L = 1; L <= n; ++L) {
-            if (!alive[L] || pred[L] != 0 || succ[L] == 0) continue;  // start of a directed chain
-            std::vector<int> chain;
-            for (int cur = L; cur != 0 && alive[cur]; cur = succ[cur]) chain.push_back(cur);
-            const int m = static_cast<int>(chain.size());
-            if (m < 4) continue;  // MAF chain reduction only fires for m > 3
-            const int rep = chain[1];
-            for (int j = 2; j <= m - 2; ++j) {  // interior leaves chain[2..m-2]
-                const int v = chain[j];
-                for (int x : exp[v]) exp[rep].push_back(x);
-                exp[v].clear();
-                if (!delete_leaf(node_alive1, p1, lc1, rc1, node_of_label1, root1, v) ||
-                    !delete_leaf(node_alive2, p2, lc2, rc2, node_of_label2, root2, v)) {
-                    throw std::runtime_error("Failed to apply a validated common-chain reduction.");
-                }
-                alive[v] = 0;
-                ++removed;
-            }
-            ++red.chain_reductions;
-        }
-        red.chain_leaves_removed += removed;
-        return removed;
-    };
 
     bool any = false;
     while (true) {
@@ -1176,10 +1153,6 @@ static SubtreeReduction compute_subtree_reduction(
             ++red.subtree_contractions;
         }
         if (pass_changed) continue;
-        if (enable_chain) {
-            int removed = apply_chain_reduction();
-            if (removed > 0) { any = true; continue; }
-        }
         if (!enable_three_two) break;
 
         std::vector<ThreeTwoEvent> events;
@@ -1227,6 +1200,29 @@ static SubtreeReduction compute_subtree_reduction(
         if (applied == 0) break;
     }
 
+    // Detect maximal common chains on the reduced trees WITHOUT collapsing them. Keeping
+    // their leaves (and thus their spine edges) in the model is what makes the lift sound;
+    // the solver treats each chain as one pre-seeded component (optimal, since splitting a
+    // common chain only adds components).
+    std::vector<std::vector<int>> chains_cur;
+    if (enable_chain) {
+        std::vector<int> succ(n + 1, 0), pred(n + 1, 0);
+        for (int L = 1; L <= n; ++L) {
+            if (!alive[L]) continue;
+            int u1 = up_neighbor(node_alive1, p1, lc1, rc1, l1, lab1, node_of_label1, L);
+            if (u1 == 0) continue;
+            int u2 = up_neighbor(node_alive2, p2, lc2, rc2, l2, lab2, node_of_label2, L);
+            if (u2 == 0 || u2 != u1 || !alive[u1]) continue;
+            succ[L] = u1; pred[u1] = L;
+        }
+        for (int L = 1; L <= n; ++L) {
+            if (!alive[L] || pred[L] != 0 || succ[L] == 0) continue;  // chain start
+            std::vector<int> ch;
+            for (int cur = L; cur != 0 && alive[cur]; cur = succ[cur]) ch.push_back(cur);
+            if ((int)ch.size() >= 4) { chains_cur.push_back(std::move(ch)); ++red.chain_reductions; }
+        }
+    }
+
     std::vector<int> survivors;
     for (int L = 1; L <= n; ++L) if (alive[L]) survivors.push_back(L);
     int rn = static_cast<int>(survivors.size());
@@ -1239,6 +1235,11 @@ static SubtreeReduction compute_subtree_reduction(
         newlabel[L] = i + 1;
         std::sort(exp[L].begin(), exp[L].end());
         red.expansion[i + 1] = exp[L];
+    }
+    for (auto& ch : chains_cur) {
+        std::vector<int> rc;
+        for (int L : ch) if (L >= 1 && L <= n && newlabel[L]) rc.push_back(newlabel[L]);
+        if (rc.size() >= 2) red.chains.push_back(std::move(rc));
     }
     red.newick1 = serialize_reduced_newick(l1, lc1, rc1, lab1, newlabel, root1);
     red.newick2 = serialize_reduced_newick(l2, lc2, rc2, lab2, newlabel, root2);
@@ -2538,8 +2539,9 @@ static void solve(int n, TreeQueries& q1, TreeQueries& q2, const Params& params,
     std::vector<Component> global_pool;
     try {
         g_lower_bound = 1;
-        // 1. Fast greedy-merge floor
-        std::vector<Component> floor = greedy_merge_improvement(n, q1, q2, singleton_forest(n), deadline);
+        for (const Component& c : g_seed_chains) global_pool.push_back(c);
+        // 1. Fast greedy-merge floor, seeded from whole chains (kept intact)
+        std::vector<Component> floor = greedy_merge_improvement(n, q1, q2, seed_forest_impl(n, g_seed_chains), deadline);
         if (forest_is_valid(n, q1, q2, floor)) {
             set_best_forest(floor);
             for(const auto& c : floor) if(c.size() > 1) global_pool.push_back(c);
@@ -2750,12 +2752,14 @@ static std::vector<Component> decomp_solve_subinstance(
     std::vector<Component> sv_forced = std::move(g_forced_components);
     TreeQueries* sv_oq = g_output_query;
     bool sv_sup = g_suppress_publish;
+    std::vector<Component> sv_sc = std::move(g_seed_chains);
 
     std::vector<Component> result;
     try {
         g_best_forest.clear(); g_best_output.clear();
         g_leaf_expansion.clear(); g_forced_components.clear();
         g_suppress_publish = true;
+        g_seed_chains.clear();
         params.quiet = true;
         TreeQueries q1(t1), q2(t2);
         g_output_query = &q1;
@@ -2767,11 +2771,13 @@ static std::vector<Component> decomp_solve_subinstance(
         g_best_forest = std::move(sv_bf); g_best_output = std::move(sv_bo);
         g_leaf_expansion = std::move(sv_exp); g_forced_components = std::move(sv_forced);
         g_output_query = sv_oq; g_suppress_publish = sv_sup;
+        g_seed_chains = std::move(sv_sc);
         throw;
     }
     g_best_forest = std::move(sv_bf); g_best_output = std::move(sv_bo);
     g_leaf_expansion = std::move(sv_exp); g_forced_components = std::move(sv_forced);
     g_output_query = sv_oq; g_suppress_publish = sv_sup;
+    g_seed_chains = std::move(sv_sc);
     return result;
 }
 
@@ -2970,7 +2976,14 @@ int main(int argc, char** argv) {
         TreeQueries orig_q1(orig_t1), orig_q2(orig_t2);
         g_output_query = kernelized ? &orig_q1 : &q1;
 
-        set_best_forest(singleton_forest(inst.n));
+        g_seed_chains.clear();
+        for (const auto& ch : red.chains) {
+            std::vector<int> ls;
+            for (int l : ch) if (l >= 1 && l <= inst.n) ls.push_back(l);
+            if (ls.size() >= 2) g_seed_chains.emplace_back(std::move(ls));
+        }
+
+        set_best_forest(seed_forest_impl(inst.n, g_seed_chains));
         install_termination_handlers();
 
         if (!params.quiet) {
