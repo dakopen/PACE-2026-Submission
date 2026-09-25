@@ -14,7 +14,6 @@ forest to **stdout**.
 ```
 PACE-2026-Submission/
 ├── README.md               # this file
-├── Solver-Description.pdf  # Short mathematical description of ideas used for the solver
 ├── Dockerfile              # Debian 13.5 builder image with HiGHS baked in (static)
 ├── docker_setup.sh         # one-shot reproducible build in a Debian 13.5 container
 ├── submission.cpp          # the complete solver (single translation unit)
